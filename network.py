@@ -14,7 +14,6 @@ class Net(Model):
 
         self.config = config 
 
-        self.flatten = Flatten()
         self.dense_1 = Dense(512, activation="relu")
         self.dense_2 = Dense(512, activation="relu")
         self.actor_head = Dense(4, activation="softmax")
@@ -22,8 +21,7 @@ class Net(Model):
 
     def call(self, inputs):
 
-        x = self.flatten(inputs)
-        x = self.dense_1(x)
+        x = self.dense_1(inputs)
         x = self.dense_2(x)
         actor_output = self.actor_head(x)
         critic_output = self.critic_head(x)
