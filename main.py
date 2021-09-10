@@ -22,6 +22,7 @@ class Agent():
         self.lr = 0.0001
         self.zero_fixer = 1e-9
         self.seed = 42
+        self.discount_reward_factor = 0.95
 
         self.optimizer = Adam(learning_rate=self.lr)
 
@@ -33,21 +34,54 @@ class Agent():
             # Flatten the state for now. Later add convolutions
             state = np.reshape(state,(1,-1))
 
+            states, actions, rewards, next_states, dones = [], [], [], [], []
+
             while not done:
                 
                 action = self.network(state)[0][0]
-                actions = [0,1,2,3]
-                action_taken = np.random.choice(actions, p=action.numpy())
+                actions_game = [0,1,2,3]
+                action_taken = np.random.choice(actions_game, p=action.numpy())
                 next_state, reward, done = self.graphgame.step(action_taken)
 
                 # Flatten the state for now. Later add convolutions
                 next_state = np.reshape(next_state,(1,-1))
-                action = tf.one_hot(action_taken, 4)
-                transition = [state, action, reward, next_state, done]
-                self.memory.store(transition)
+                action = tf.one_hot(action_taken, 4).numpy()
+
+                # Reward needs to be reshaped, otherwise it probably doesn't work too good.
+
+                states.append(state)
+                actions.append(action)
+                rewards.append(reward)
+                next_states.append(next_state)
+                dones.append(done)
+
                 state = next_state
 
+
+
                 if done:
+
+                    discounted_rewards = []
+                    last_reward = rewards[-1]
+                    step = 0
+                    for reward in reversed(rewards):
+                        step += 1
+                        if step == 1:
+                            discounted_rewards.append(last_reward)
+                        else:
+                            last_reward = last_reward * self.discount_reward_factor
+                            discounted_rewards.insert(0, last_reward)
+                    
+                    discounted_rewards = np.array(discounted_rewards)
+
+                    #if np.sum(discounted_rewards) != 0:
+                    #    discounted_rewards -= np.mean(discounted_rewards)
+                    #    discounted_rewards /= np.std(discounted_rewards)
+
+                    for state, action_2, reward_2, next_state, done_2 in zip(states, actions, discounted_rewards, next_states, dones):
+                        transition = [state, action_2, reward_2, next_state, done_2]
+                        self.memory.store(transition)
+
                     if episode >= 10: 
                         self.update_networks(episode)
 
@@ -67,7 +101,7 @@ class Agent():
             next_value = tf.reshape(next_value, -1)
             values = tf.reshape(values, -1)
 
-            entropy_coeff = 0.1
+            entropy_coeff = 0.5
             z0 = tf.reduce_sum(pred_action, axis = 1)
             z0 = tf.stack([z0,z0,z0,z0], axis=-1)
             p0 = pred_action / (z0 + self.zero_fixer) 
@@ -92,12 +126,12 @@ class Agent():
 
         if episode % 200 == 0:
             
-            np.random.seed(self.seed)   
+            #np.random.seed(self.seed)   
 
             print(pred_action, values)
 
 
 
-agent = Agent(4, mode = None, seed = 42, config = ["empty"])
+agent = Agent(5, mode = None, seed = 42, config = ["empty"])
 
 agent.train()
