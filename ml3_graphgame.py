@@ -32,7 +32,7 @@ class Policy_Network(nn.Module):
         for i, param in enumerate(self.policy.parameters()):
             param.detach()
 
-    def play_episode(self, time_horizon):
+    def play_episode_inner(self, time_horizon):
 
         state, reward, done = self.graphgame.initialize()
         state = torch.Tensor(state)
@@ -48,13 +48,13 @@ class Policy_Network(nn.Module):
 
         for t in range(time_horizon):
 
-            action = self.forward(state)
+            prediction = self.forward(state)
             
             #action_taken = torch.argmax(action)
-            #action_taken = torch.multinomial(action,1)
+            action_taken = torch.multinomial(prediction,1)
 
 
-            next_state, reward, done = self.graphgame.step(action)
+            next_state, reward, done = self.graphgame.step(action_taken)
 
 
             next_state = torch.Tensor(next_state)
@@ -62,17 +62,57 @@ class Policy_Network(nn.Module):
             next_state = torch.flatten(next_state)
 
             
-            #action = torch.nn.functional.one_hot(action_taken, 4)[0]
+            action_taken = torch.nn.functional.one_hot(action_taken, 4)[0]
+            action = action_taken
 
+            states.append(state)
+            actions.append(action)
+            rewards.append(reward)
 
-            states.append(state.clone())
-            actions.append(action.clone())
-            rewards.append(reward.clone())
-
-            state = next_state.clone()
+            state = next_state
 
         return torch.stack(states), torch.stack(actions), torch.stack(rewards)
 
+    def play_episode_outer(self, time_horizon):
+
+        state, reward, done = self.graphgame.initialize()
+        state = torch.Tensor(state)
+
+        state = torch.flatten(state)
+        print(state, reward)
+
+        states = []
+        actions = []
+        rewards = []
+
+        state = torch.Tensor(state)
+
+        for t in range(time_horizon):
+
+            prediction = self.forward(state)
+            
+            #action_taken = torch.argmax(action)
+            action_taken = torch.multinomial(prediction,1)
+
+
+            next_state, reward, done = self.graphgame.step(action_taken)
+
+
+            next_state = torch.Tensor(next_state)
+            reward = torch.Tensor([reward])            
+            next_state = torch.flatten(next_state)
+
+            
+            action_taken = torch.nn.functional.one_hot(action_taken, 4)[0]
+            action = prediction * action_taken
+
+            states.append(state)
+            actions.append(action)
+            rewards.append(reward)
+
+            state = next_state
+
+        return torch.stack(states), torch.stack(actions), torch.stack(rewards)
 
 class Meta_Network(nn.Module):
 
@@ -96,47 +136,46 @@ class Meta_Network(nn.Module):
 
 def train(policy_network, meta_network, n_outer_iter, n_inner_iter, time_horizon):
 
-    with torch.autograd.set_detect_anomaly(True):
 
-        task_loss_fn = Task_loss()
-        policy_opt = torch.optim.SGD(policy_network.parameters(), lr=policy_network.learning_rate)
-        meta_opt = torch.optim.Adam(meta_network.parameters(), lr=meta_network.learning_rate)
+    task_loss_fn = Task_loss()
+    policy_opt = torch.optim.SGD(policy_network.parameters(), lr=policy_network.learning_rate)
+    meta_opt = torch.optim.Adam(meta_network.parameters(), lr=meta_network.learning_rate)
 
-        for outer_i in range(n_outer_iter):
+    for outer_i in range(n_outer_iter):
 
-            # set gradient with respect to meta loss parameters to 0
-            meta_opt.zero_grad()
-            for _ in range(n_inner_iter):
+        # set gradient with respect to meta loss parameters to 0
+        meta_opt.zero_grad()
+        for _ in range(n_inner_iter):
 
-                policy_opt.zero_grad()
+            policy_opt.zero_grad()
 
-                with higher.innerloop_ctx(policy_network, policy_opt, copy_initial_weights=False) as (f_policy, diff_opt):
+            with higher.innerloop_ctx(policy_network, policy_opt, copy_initial_weights=False) as (f_policy, diff_opt):
 
-                    # use current meta loss to update model
-                    states, actions, rewards = f_policy.play_episode(time_horizon)
+                # use current meta loss to update model
+                states, actions, rewards = f_policy.play_episode_inner(time_horizon)
 
-                    loss_input = torch.cat([states, actions, rewards], dim=1)
-                    pred_task_loss = meta_network(loss_input).mean()
-                    diff_opt.step(pred_task_loss)
+                loss_input = torch.cat([states, actions, rewards], dim=1)
+                pred_task_loss = meta_network(loss_input).mean()
+                diff_opt.step(pred_task_loss)
 
-                # compute task loss
-                state, act, reward = f_policy.play_episode(time_horizon)
+            # compute task loss
+            state, act, reward = f_policy.play_episode_outer(time_horizon)
 
-                location = torch.argmax(state[0]).float()
-                goal = torch.argmax(state[1]).float()
-                
-                max_reward = torch.Tensor([1.])
-                max_rewards = [torch.Tensor([max_reward])]*time_horizon
-                max_rewards = torch.stack(max_rewards)
-                task_loss = task_loss_fn(reward, max_reward)
-                # backprop grad wrt to task loss
-                task_loss.backward()
+            location = torch.argmax(state[0]).float()
+            goal = torch.argmax(state[1]).float()
+            
+            max_reward = torch.Tensor([1.])
+            max_rewards = [torch.Tensor([max_reward])]*time_horizon
+            max_rewards = torch.stack(max_rewards)
+            task_loss = - (torch.log(act)).mean()
+            # backprop grad wrt to task loss
+            task_loss.backward()
 
-            meta_opt.step()
+        meta_opt.step()
 
-            if outer_i % 100 == 0:
-                print("meta iter: {} loss: {}".format(outer_i, task_loss.item()))
-                #print('last state', s[-1])
+        if outer_i % 100 == 0:
+            print("meta iter: {} loss: {}".format(outer_i, task_loss.item()))
+            #print('last state', s[-1])
 
 
 class Task_loss(object):
